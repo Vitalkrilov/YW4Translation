@@ -1,131 +1,176 @@
 #!/bin/python
 
-# This script generates $map_file on first run. When everything else is done, you should use it to patch $diff_file and $map_file to original files.
-
 from L5BTFile import L5BTFile
-import sys
+from myutils import eprint, hasJPChars, getFiles
 import os
-import re
+import sys
 import json
+import argparse
+import pathlib
 
 
 
-def eprint(*args, **kwargs):
-  print(*args, file=sys.stderr, **kwargs)
+def main(args):
+  progName = args[0]
+  parser = argparse.ArgumentParser(prog=progName, description='This script is used to generate map.json or to patch translation files with map.json and diff.json.',
+epilog=f'''examples:
+ $  {progName} -i text_all.src -m map.json -d diff.json -o text_all  #COMMENT: use "map.json" and "diff.json" to patch data from "text_all.src" and save to "text_all"
+ $  {progName} -f -i text_all -m map.json -M map.json -o text_all       #COMMENT: use "map.json" to patch data in "text_all" (modifying it) and update "map.json" (if there is something not inside)
+ $  {progName} -f -i text_all -M map.json data/common/text/ja           #COMMENT: use data of "text_all" to generate "map.json", explicitly defining $input
+ $  {progName} -i text_all                                           #COMMENT: dry run to check if files are not corrupted (because L5BTFile.py cares about it)
+ $  {progName} -i text_all -d diff.json -o text_all                  #COMMENT: apply "diff.json" to "text_all" (if you want to translate manually by editing diff.json)''', formatter_class=argparse.RawDescriptionHelpFormatter)
+  parser.add_argument('input', default=['data/common/text/ja'], help='relative path to files/directories (recursive search) where we should search for files (default: ["data/common/text/ja"])', nargs='*')
+  parser.add_argument('-i', '--input-root', required=True, help='path to text_all\'s root directory where all *.cfg.bin files stored (example: "text_all.src")')
+  parser.add_argument('-o', '--output-root', help='path to text_all\'s root directory where we should save patched files (example: "text_all")')
+  parser.add_argument('-m', '--input-map', help='path to translation map file to read from (example: "map.json"), you can use "-" to read json from stdin')
+  parser.add_argument('-M', '--output-map', help='path to translation map file to write to (example: "map.json"), you can use "-" to output generated json to stdout')
+  parser.add_argument('-d', '--diff-file', help='path to translation diff file (example: "diff.json")')
+  parser.add_argument('-c', '--current-name', default='$transrun.py/current$', help='a keyword to use in translation map to save translation progress (default: "$transrun.py/current$")')
+  parser.add_argument('-f', '--fix-original-files', action='store_true', default=False, help='fix original Japanese files during generating translation map (especially for adding missing \']\'...)')
+  parser.add_argument('-l', '--log-basic', action='store_true', default=False, help='output minimal info (default: only errors will be shown)')
+  parser.add_argument('-L', '--log-additional', action='store_true', default=False, help='output additional info (default: only errors will be shown)')
+  parser.add_argument('-D', '--log-debug', action='store_true', default=False, help='output debug info (default: only errors will be shown)')
+  args = parser.parse_args(args[1:])
 
-if __name__ == '__main__':
-  if len(sys.argv) < 6:
-    eprint(f'Usage: {sys.argv[0]} map_file diff_file input_files_dirname output_files_dirname input_files...')
-    eprint(f'Warning: every input_file should use $input_files_dirname (and $output_files_dirname for output files) as root directory and these two directories should be in same directory')
-    eprint(f'Note: if you don\'t want to provide $diff_file, then just use \'\' as an argument')
-    eprint(f'Note: if you want to generate $map_file and don\'t want to write to output file, then use \'\' in $output_files_dirname')
-    eprint(f'Examples: {sys.argv[0]} map.json diff.json text_all.src text_all text_all.src/data/common/text/ja/**/*.cfg.bin')
-    eprint(f'         or')
-    eprint(f'          {sys.argv[0]} map.json \'\' text_all text_all ./some/path/text_all/data/common/text/ja/**/*.cfg.bin')
-    eprint(f'         or')
-    eprint(f'          {sys.argv[0]} map.json \'\' text_all \'\' some/path/text_all/data/common/text/ja/**/*.cfg.bin')
-    exit(1)
+  inputRootPath = pathlib.PurePath(args.input_root)
+  if not os.path.isdir(inputRootPath):
+    eprint(f'{progName}: error: provided $input-root is not a directory')
+    return 1
+  for e in args.input:
+    if not os.path.exists(inputRootPath.joinpath(e)):
+      eprint(f'{progName}: error: $input-root does not contain one of $input values ("{e}")')
+      return 1
 
-  # Replaces '[a/b]' to 'a'
-  matcher = re.compile(r'\[(?:(?![\]/]).)*?/(?:(?![\]]).)*?\]')
-  def purify(text):
-    global matcher
-    for e in matcher.findall(text):
-      text = text.replace(e, e[1:-1].split('/')[0], 1)
-    return text
-
-  # NOTE: 0x3000 symbol is ignored but you might want to get rid of it to (if so then just use replaces.py where you will need to add {'\u3000': ' '})
-  def hasJPChars(text):
-    for c in text:
-      if ord(c) > 0x3000:
-        return c
-    return False
-
-  if os.path.isfile(sys.argv[1]):
-    d = json.loads(open(sys.argv[1]).read())
+  if args.input_map == None:
+    translationMap = dict()
+    registerTranslationErrors = False
+  else:
+    if args.input_map != '-' and not os.path.isfile(args.input_map):
+      eprint(f'{progName}: error: provided $input-map is not a file')
+      return 1
+    if args.input_map == '-':
+      content = sys.stdin.read()
+    else:
+      with open(args.input_map) as f:
+        content = f.read()
+    translationMap = json.loads(content)
     translErrorLog = []
     registerTranslationErrors = True
-  else:
-    d = dict()
-    registerTranslationErrors = False
 
-  if sys.argv[2] != '' and os.path.isfile(sys.argv[2]):
-    diff = json.loads(open(sys.argv[2]).read())
+  if args.output_map != None and args.output_map != '-':
+    if os.path.isfile(args.output_map):
+      if not os.access(args.output_map, os.W_OK):
+        eprint(f'{progName}: error: provided $output-map is non-writable (must be a path to existing file or its directory should be able to store it)')
+        return 1
+    else:
+      sParent = str(pathlib.PurePath(args.output_map).parent)
+      if not os.path.isdir(sParent) or not os.access(sParent, os.W_OK | os.X_OK):
+        eprint(f'{progName}: error: can\'t create a file at $output-map (must be a path to existing file or its directory should be able to store it)')
+        return 1
+
+  if args.diff_file != None:
+    if os.path.isfile(args.diff_file):
+      with open(args.diff_file) as f:
+        diff = json.loads(f.read())
+    else:
+      eprint(f'{progName}: error: provided $diff-file is not a file')
+      return 1
   else:
     diff = dict()
 
-  loglevel = 0b000 # only basic info | additional info | debug info
-  for fname in sys.argv[5:]:
-    if ')/////(' in fname:
-      eprint(f'{sys.argv[0]}: error: wrong path ["{fname}"]')
-      continue
-    tmpCnt = ('/' + fname).count(f'/{sys.argv[3]}/')
-    if tmpCnt != 1:
-      if tmpCnt == 0:
-        eprint(f'{sys.argv[0]}: error: $input_files_dirname is not in input_file\'s path')
-      else:
-        eprint(f'{sys.argv[0]}: error: please do not use $input_files_dirname which already is in the path before target dir')
-      exit(1)
-    fname = ('/' + fname).replace(f'/{sys.argv[3]}/', '/)/////(/')[1:] # to be able to use shell's globstar
-    l5bt_file = L5BTFile(fname.replace(')/////(', sys.argv[3]))
-    if loglevel & 0b100: print(f'{sys.argv[0]}: provided file "{l5bt_file.filename}"')
-    if loglevel & 0b010: print(f'{sys.argv[0]}: loading file...', end='')
+  if args.output_root != None:
+    outputRootPath = pathlib.PurePath(args.output_root)
+    if not os.path.isdir(outputRootPath):
+      eprint(f'{progName}: error: provided $output-root is not a directory')
+      return 1
+    for e in args.input:
+      if not os.path.exists(outputRootPath.joinpath(e)):
+        eprint(f'{progName}: error: $output-root does not contain one of $input values ("{e}")')
+        return 1
+
+  inputFiles = getFiles(args.input_root, args.input, '.cfg.bin')
+
+  for fnameInput in inputFiles:
+    # Getting relative filename
+    fname = pathlib.PurePath()
+    for e in fnameInput.parts[len(inputRootPath.parts):]:
+      fname = fname.joinpath(e)
+
+    l5bt_file = L5BTFile(str(fnameInput))
+    if args.log_basic: eprint(f'{progName}: provided file "{l5bt_file.filename}"')
+    if args.log_additional: eprint(f'{progName}: loading file...', end='')
     l5bt_file.load()
-    if loglevel & 0b010: print(' Done!')
-    l5bt_file.filename = fname.replace(')/////(', sys.argv[4])
-    fname = fname[fname.find(')/////(/')+len(')/////(/'):]
+    if args.log_additional: eprint(' Done!')
+    if args.output_root != None:
+      l5bt_file.filename = str(outputRootPath.joinpath(fname))
+
+    # Because diff.json uses posix path, yes.
+    fname = str(pathlib.PurePosixPath(fname))
 
     # Patching file using provided diff.json
     if fname in diff.keys():
       for k in diff[fname].keys():
         if l5bt_file.labels[int(k)].text != list(diff[fname][k].keys())[0]:
-          eprint(f'{sys.argv[0]}: warning: failed to patch {fname}:{k} (strings are different)')
+          eprint(f'{progName}: warning: failed to patch {fname}:{k} (strings are different)')
           continue
         l5bt_file.labels[int(k)].text = list(diff[fname][k].values())[0]
-        if loglevel & 0b001: print(f'{sys.argv[0]}: patched {fname}:{k}')
+        if args.log_debug: eprint(f'{progName}: patched {fname}:{k}')
 
     # Applying/generating map.json if we need to do this
     hasJapaneseCharacters = False
     for e in l5bt_file.labels:
       c = hasJPChars(e.text)
       if c != False:
-        if loglevel & 0b001: print(f'{sys.argv[0]}: Japanese character detected (reason: \'{c}\')')
+        if args.log_debug: eprint(f'{progName}: Japanese character detected (reason: \'{c}\')')
         hasJapaneseCharacters = True
         break
     if hasJapaneseCharacters:
-      if loglevel & 0b010: print(f'{sys.argv[0]}: modifying texts...', end='')
+      if args.log_additional: eprint(f'{progName}: modifying texts...', end='')
 
-      if loglevel & 0b001: print(f'{sys.argv[0]}: texts in Japanese:')
+      if args.log_debug: eprint(f'{progName}: texts in Japanese:')
       for i in range(len(l5bt_file.labels)):
         s = l5bt_file.labels[i].text
+        if s == args.current_name:
+          eprint(f'{progName}: critical: there is a left-value named \"{s}\", which is used to be a counter of translated strings (you must assign another keyword, run with "--help" argument for more info)')
+          return 1
         if hasJPChars(s) != False:
           # All modifications should be done here:
-          if purify(s) in d.keys():
-            l5bt_file.labels[i].text = d[purify(s)]
+          if s in translationMap.keys():
+            l5bt_file.labels[i].text = translationMap[s]
           else:
             if registerTranslationErrors:
-              if loglevel & 0b001:
-                transErrTxt = f'{sys.argv[0]}: error translating: "' + s.replace('\n', '\\n') + '"'
+              transErrTxt = f'{progName}: error translating: "' + s.replace('\n', '\\n') + '"'
+              if args.log_debug:
                 eprint(transErrTxt)
               translErrorLog.append(transErrTxt+'\n')
-            d[purify(s)] = purify(s)
+            if args.output_map != None:
+              if args.fix_original_files:
+                if s == '\u30df\u30f3\u30ca\u30d8\u30f3\u30b2\u3010[\u5b88/\u30ac\u30fc\u30c9\u3011': s += ']'
+              translationMap[s] = s
 
-          if loglevel & 0b001:
+          if args.log_debug:
             if s != l5bt_file.labels[i].text:
-              print(' + "' + s.replace('\n', '\\n') + '" -> "' + l5bt_file.labels[i].text.replace('\n', '\\n') + '"')
+              eprint(' + "' + s.replace('\n', '\\n') + '" -> "' + l5bt_file.labels[i].text.replace('\n', '\\n') + '"')
 
-      if loglevel & 0b010: print(' Done!')
+      if args.log_additional: eprint(' Done!')
 
-    if sys.argv[4] != '':
-      if loglevel & 0b010: print(f'{sys.argv[0]}: saving file...', end='')
+    if args.output_root != None:
+      if args.log_additional: eprint(f'{progName}: saving file...', end='')
       l5bt_file.save()
-      if loglevel & 0b010: print(' Done!')
+      if args.log_additional: eprint(' Done!')
 
-  f=open(sys.argv[1], 'w')
-  f.write(json.dumps(d, indent=2))
-  f.close()
+  if args.output_map != None:
+    mapOutput = json.dumps(translationMap, indent=2, ensure_ascii=False)
+    if args.output_map == '-':
+      print(mapOutput)
+    else:
+      with open(args.output_map, 'w') as f:
+        f.write(mapOutput)
 
   if registerTranslationErrors and len(translErrorLog):
     eprint('Translation errors:')
     for e in translErrorLog:
       eprint(' - ' + e)
+
+if __name__ == '__main__':
+  exit(main(sys.argv))

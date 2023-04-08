@@ -4,11 +4,9 @@ import sys
 import struct
 import os
 import json
+import myutils
 
 
-
-def eprint(*args, **kwargs):
-    print(*args, file=sys.stderr, **kwargs)
 
 # We could use floats but let it be like now...
 def getEntryLength(entryLength):
@@ -151,7 +149,7 @@ class L5BTFile:
     else:
       if not self.corrupted:
         self.corrupted = True
-        eprint(f'{sys.argv[0]}: warning: file corrupted (unknown encoding type (value: {hex(self.encoding)})) ["{self.filename}"]')
+        myutils.eprint(f'{sys.argv[0]}: warning: file corrupted (unknown encoding type (value: {hex(self.encoding)})) ["{self.filename}"]')
     br.seek(0)
 
     # Read header
@@ -176,7 +174,7 @@ class L5BTFile:
       if len(entry.data) != entryLength:
         if not self.corrupted:
           self.corrupted = True
-          eprint(f'{sys.argv[0]}: warning: file corrupted (expected {entryLength} entries but got {len(entry.data)}) ["{self.filename}"]')
+          myutils.eprint(f'{sys.argv[0]}: warning: file corrupted (expected {entryLength} entries but got {len(entry.data)}) ["{self.filename}"]')
       self.entries.append(entry)
 
     # Get labels
@@ -188,7 +186,7 @@ class L5BTFile:
           if d.value >= self.header.stringSecSize:
             if not self.corrupted:
               self.corrupted = True
-              eprint(f'{sys.argv[0]}: warning: file corrupted (got string offset outside strings block) ["{self.filename}"]')
+              myutils.eprint(f'{sys.argv[0]}: warning: file corrupted (got string offset outside strings block) ["{self.filename}"]')
           else:
             index = -1
             for i in range(len(self.labels)):
@@ -212,7 +210,7 @@ class L5BTFile:
     if self.rebuildStringOffsets():
       if not self.corrupted:
         self.corrupted = True
-        eprint(f'{sys.argv[0]}: warning: file corrupted (strings were not packed in right way) ["{l5tb_file.filename}"]')
+        myutils.eprint(f'{sys.argv[0]}: warning: file corrupted (strings were not packed in right way) ["{l5tb_file.filename}"]')
 
     self.loaded = True
 
@@ -278,7 +276,7 @@ class L5BTFile:
     else:
       if not self.corrupted:
         self.corrupted = True
-        eprint(f'{sys.argv[0]}: warning: file corrupted (unknown encoding type (value: {hex(self.encoding)})) ["{self.filename}"]')
+        myutils.eprint(f'{sys.argv[0]}: warning: file corrupted (unknown encoding type (value: {hex(self.encoding)})) ["{self.filename}"]')
     self.header.stringCount = len(data['strings'])
     self.header.entryCount = len(data['entries'])
     # some consts
@@ -354,7 +352,7 @@ class L5BTFile:
           entry['data'].append({'type': e1.bType, 'value': e1.value})
       data['entries'].append(entry)
 
-    return json.dumps(data, indent=2)
+    return json.dumps(data, indent=2, ensure_ascii=False)
 
   def __str__(self):
     res = ''
